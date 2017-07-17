@@ -1,7 +1,7 @@
-extern crate dcpu16_types;
-
 use std::fmt::{Debug, Formatter, Error};
-use dcpu16_types::{SimpleOperand, ComplexOperand, BasicOperation, SpecialOperation, Instruction};
+
+pub mod types;
+use types::{SimpleOperand, ComplexOperand, BasicOperation, SpecialOperation, Instruction};
 
 
 
@@ -81,7 +81,12 @@ impl Dcpu {
       use SimpleOperand::*;
       match operand {
          Push => self.stack_pointer = self.stack_pointer.wrapping_sub(1),
-         Pop  => self.stack_pointer = self.stack_pointer.wrapping_add(1),
+
+         Pop  => {
+            self.memory[self.stack_pointer as usize] = 0x0000;
+            self.stack_pointer = self.stack_pointer.wrapping_add(1);
+         },
+
          IndirectNextA
          | IndirectNextB
          | IndirectNextC
@@ -94,6 +99,7 @@ impl Dcpu {
          | IndirectNext
          | Next
          => self.program_counter += 1,
+
          _ => (),
       }
    }
@@ -328,8 +334,8 @@ impl Dcpu {
       match operation {
          Jsr => {
             self.cycle_accumulator += 3;
-            self.memory[self.stack_pointer as usize] = self.program_counter + 1;
             self.stack_pointer = self.stack_pointer.wrapping_sub(1);
+            self.memory[self.stack_pointer as usize] = self.program_counter + 1;
             self.program_counter = value.wrapping_sub(1);
          },
 
@@ -395,8 +401,8 @@ impl Dcpu {
          IndirectNextZ  => &mut self.memory[(self.registers[5] + next_word) as usize],
          IndirectNextI  => &mut self.memory[(self.registers[6] + next_word) as usize],
          IndirectNextJ  => &mut self.memory[(self.registers[7] + next_word) as usize],
-         Push           => &mut self.memory[self.stack_pointer as usize],
-         Pop            => &mut self.memory[self.stack_pointer.wrapping_sub(1) as usize],
+         Push           => &mut self.memory[self.stack_pointer.wrapping_sub(1) as usize],
+         Pop            => &mut self.memory[self.stack_pointer as usize],
          IndirectSP     => &mut self.memory[self.stack_pointer as usize],
          IndirectNextSP => &mut self.memory[(self.stack_pointer + next_word) as usize],
          SP             => &mut self.stack_pointer,
@@ -418,157 +424,152 @@ impl Dcpu {
 
 
 
-#[cfg(test)]
-mod tests {
-   use Dcpu;
+#[test]
+fn test_set() {
+   // Set a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa801;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 9);
+}
 
-   #[test]
-   fn test_set() {
-      // Set a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa801;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 9);
-   }
+#[test]
+fn test_add() {
+   // Add a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa802;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 14);
+}
 
-   #[test]
-   fn test_add() {
-      // Add a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa802;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 14);
-   }
+#[test]
+fn test_sub() {
+   // Sub a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa803;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 0xfffc);
+}
 
-   #[test]
-   fn test_sub() {
-      // Sub a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa803;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 0xfffc);
-   }
+#[test]
+fn test_mul() {
+   // Mul a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa804;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 45);
+}
 
-   #[test]
-   fn test_mul() {
-      // Mul a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa804;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 45);
-   }
+#[test]
+fn test_mli() {
+   // Mli a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa805;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 45);
+}
 
-   #[test]
-   fn test_mli() {
-      // Mli a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa805;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 45);
-   }
+#[test]
+fn test_div() {
+   // Div a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa806;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 0);
+}
 
-   #[test]
-   fn test_div() {
-      // Div a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa806;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 0);
-   }
+#[test]
+fn test_dvi() {
+   // Dvi a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa807;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 0);
+}
 
-   #[test]
-   fn test_dvi() {
-      // Dvi a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa807;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 0);
-   }
+#[test]
+fn test_mod() {
+   // Mod a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa808;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 5);
+}
 
-   #[test]
-   fn test_mod() {
-      // Mod a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa808;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 5);
-   }
+#[test]
+fn test_mdi() {
+   // Mdi a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa809;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 5);
+}
 
-   #[test]
-   fn test_mdi() {
-      // Mdi a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa809;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 5);
-   }
+#[test]
+fn test_and() {
+   // And a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa80a;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 1);
+}
 
-   #[test]
-   fn test_and() {
-      // And a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa80a;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 1);
-   }
+#[test]
+fn test_bor() {
+   // Bor a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa80b;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 0xd);
+}
 
-   #[test]
-   fn test_bor() {
-      // Bor a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa80b;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 0xd);
-   }
+#[test]
+fn test_xor() {
+   // Xor a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa80c;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 0xc);
+}
 
-   #[test]
-   fn test_xor() {
-      // Xor a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa80c;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 0xc);
-   }
+#[test]
+fn test_shr() {
+   // Shr a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa80d;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 0);
+}
 
-   #[test]
-   fn test_shr() {
-      // Shr a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa80d;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 0);
-   }
-
-   #[test]
-   fn test_asr() {
-      // Asr a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa80e;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 0);
-   }
-
-   #[test]
-   fn test_shl() {
-      // Shl a, 0x9
-      let mut dcpu = Dcpu::new();
-      dcpu.registers[0] = 5;
-      dcpu.memory[0] = 0xa80f;
-      dcpu.step();
-      assert_eq!(dcpu.registers[0], 0x0a00);
-   }
+#[test]
+fn test_asr() {
+   // Asr a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa80e;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 0);
+}
+   
+#[test]
+fn test_shl() {
+   // Shl a, 0x9
+   let mut dcpu = Dcpu::new();
+   dcpu.registers[0] = 5;
+   dcpu.memory[0] = 0xa80f;
+   dcpu.step();
+   assert_eq!(dcpu.registers[0], 0x0a00);
 }
