@@ -1,0 +1,6 @@
+mod operand_miscellaneous;
+mod operand_push_pop;
+mod operand_register;
+mod operand_register_indirect;
+mod operand_register_next_word_indirect;
+mod instructions_arithmetic;

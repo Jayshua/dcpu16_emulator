@@ -1,8 +1,13 @@
-use std::fmt::{Debug, Formatter, Error};
-
+mod tests;
 pub mod types;
-use types::{SimpleOperand, ComplexOperand, BasicOperation, SpecialOperation, Instruction};
 
+
+pub enum HardwareInstruction<'a> {
+   GetCount(&'a mut u16),
+   GetInfo(u16),
+   Interrupt(u16),
+   None
+}
 
 
 pub struct Dcpu {
@@ -10,36 +15,60 @@ pub struct Dcpu {
    pub stack_pointer: u16,
    pub program_counter: u16,
    pub excess: u16,
-
-   pub cycle_count: u64,
-   pub cycle_accumulator: u16,
-
    pub memory: [u16; 0x10000],
+   pub cycle_accumulator: u32,
+   pub cycle_count: u32,
+   pub interrupt_address: u16,
+   pub interrupt_queue: Vec<u16>,
+   pub interrupt_queueing: bool,
 }
 
-
-
-impl Debug for Dcpu {
-   fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
-      writeln!(f, r"
-         DCPU {{
-            registers: {:?}
-            pc: {:x} [{:x}]
-            sp: {:x} [{:x}]
-            excess: {:x}
-            cycle_count: {}
-            cycle_accumulator: {}
-         }}",
-         self.registers,
-         self.program_counter,       self.memory[self.program_counter as usize],
-         self.stack_pointer,         self.memory[self.stack_pointer as usize],
-         self.excess,
-         self.cycle_count,
-         self.cycle_accumulator
-      )
+fn get_operand_cost(operand: u16) -> u32 {
+   match operand {
+      0x10...0x17 | 0x1a | 0x1e | 0x1f => 1,
+      _ => 0
    }
 }
 
+fn get_operand_length(operand: u16) -> u16 {
+   match operand {
+      0x10...0x17 | 0x1a | 0x1e => 1,
+      _ => 0
+   }
+}
+
+fn get_instruction_cost(instruction: u16) -> u32 {
+   match instruction {
+      0x01 | 0x0a | 0x0b | 0x0c | 0x0d | 0x0e | 0x0f => 1,
+      0x02 | 0x03 | 0x04 | 0x05 | 0x1e | 0x1f => 2,
+      0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 | 0x16 | 0x17 => 2,
+      0x06 | 0x07 | 0x08 | 0x09 | 0x1a | 0x1b => 3,
+      _ => 0
+   }
+}
+
+fn get_special_instruction_cost(instruction: u16) -> u32 {
+   match instruction {
+      0x00 => 0,
+      0x01 => 3,
+      0x08 => 4,
+      0x09 => 1,
+      0x0a => 1,
+      0x0b => 3,
+      0x0c => 2,
+      0x10 => 2,
+      0x11 => 4,
+      0x12 => panic!("Unable to compute cost of hwi instruction..."),
+      _    => panic!("Unknown special instruction!"),
+   }
+}
+
+fn is_if_op_code(op_code: u16) -> bool {
+   match op_code & 0x1f {
+      0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 | 0x16 | 0x17 => true,
+      _ => false
+   }
+}
 
 
 impl Dcpu {
@@ -49,527 +78,293 @@ impl Dcpu {
          stack_pointer: 0,
          program_counter: 0,
          excess: 0,
-         cycle_count: 0,
-         cycle_accumulator: 0,
          memory: [0; 0x10000],
+         cycle_accumulator: 0,
+         cycle_count: 0,
+         interrupt_address: 0,
+         interrupt_queue: vec![],
+         interrupt_queueing: false
       }
    }
 
 
-   // Step the DCPU forward one tick
-   pub fn step(&mut self) {
-      if self.cycle_accumulator == 0 {
-         match Instruction::decode(self.memory[self.program_counter as usize]) {
-            Some(Instruction::Basic(operation, operand_b, operand_a)) => self.basic_operation(operation, operand_b, operand_a),
-            Some(Instruction::Special(operation, operand)) => self.special_operation(operation, operand),
-            None => panic!("Unknown Instruction: {:?}", self),
-         }
-
-         self.program_counter = self.program_counter.wrapping_add(1);
-      }
-
+   pub fn step(&mut self) -> HardwareInstruction {
+      // Skip the step if the accumulator still has cycles from the last operation
       if self.cycle_accumulator > 0 {
          self.cycle_accumulator -= 1;
          self.cycle_count += 1;
-      } else {
-         println!("Cycle accumulator was 0. Has the DCPU Halted?")
-      }
-   }
-
-
-   fn handle_mutation(&mut self, operand: SimpleOperand) {
-      use SimpleOperand::*;
-      match operand {
-         Push => self.stack_pointer = self.stack_pointer.wrapping_sub(1),
-
-         Pop  => {
-            self.memory[self.stack_pointer as usize] = 0x0000;
-            self.stack_pointer = self.stack_pointer.wrapping_add(1);
-         },
-
-         IndirectNextA
-         | IndirectNextB
-         | IndirectNextC
-         | IndirectNextX
-         | IndirectNextY
-         | IndirectNextZ
-         | IndirectNextI
-         | IndirectNextJ
-         | IndirectNextSP
-         | IndirectNext
-         | Next
-         => self.program_counter += 1,
-
-         _ => (),
-      }
-   }
-
-
-   // Execute a basic operation
-   fn basic_operation(&mut self, operation: BasicOperation, operand_b: SimpleOperand, operand_a: ComplexOperand) {
-      let value_a = match operand_a {
-         ComplexOperand::Literal(val) => val,
-         ComplexOperand::Simple(operand) => {
-            let value = self.get_value(operand);
-            self.handle_mutation(operand);
-            value
-         }
-      };
-      let value_b = self.get_value(operand_b);
-      let value_a_signed = value_a as i16;
-      let value_b_signed = value_b as i16;
-
-
-      use BasicOperation::*;
-      match operation {
-         Set => {
-            self.cycle_accumulator += 1;
-            *self.get_pointer(operand_b) = value_a;
-         },
-
-         Add => {
-            self.cycle_accumulator += 2;
-            *self.get_pointer(operand_b) = value_b.wrapping_add(value_a);
-            self.excess = if (value_b as u32 + value_a as u32) > 0xffff {1} else {0};
-         },
-
-         Sub => {
-            self.cycle_accumulator += 2;
-            *self.get_pointer(operand_b) = value_b.wrapping_sub(value_a);
-            self.excess = if (value_b as i32 - value_a as i32) < 0 {0xffff} else {0};
-         },
-
-         Mul => {
-            self.cycle_accumulator += 2;
-            *self.get_pointer(operand_b) = value_b.wrapping_mul(value_a);
-            self.excess = ((value_b as u32 * value_a as u32) >> 16) as u16;
-         },
-
-         Mli => {
-            self.cycle_accumulator += 2;
-            *self.get_pointer(operand_b) = value_b_signed.wrapping_mul(value_a_signed) as u16;
-            self.excess = ((value_b as i32 * value_a as i32) >> 16) as u16;
-         },
-
-         Div => {
-            self.cycle_accumulator += 3;
-
-            if value_a == 0 {
-               *self.get_pointer(operand_b) = 0;
-               self.excess = 0;
-            } else {
-               *self.get_pointer(operand_b) = value_b.wrapping_div(value_a);
-               self.excess = (((value_b as i32) << 16i32) / (value_a as i32)) as u16;
-            }
-         },
-
-         Dvi => {
-            self.cycle_accumulator += 3;
-
-            if value_a_signed == 0 {
-               *self.get_pointer(operand_b) = 0;
-               self.excess = 0;
-            } else {
-               *self.get_pointer(operand_b) = value_b_signed.wrapping_div(value_a_signed) as u16;
-               self.excess = (((value_b_signed as i32) << 16) / (value_a_signed as i32)) as u16;
-            }
-         },
-
-         Mod => {
-            self.cycle_accumulator += 3;
-
-            *self.get_pointer(operand_b) = if value_a == 0 {
-               0
-            } else {
-               value_b.wrapping_rem(value_a)
-            }
-         },
-
-         Mdi => {
-            self.cycle_accumulator += 3;
-
-            if value_a == 0 {
-               *self.get_pointer(operand_b) = 0;
-            } else {
-               *self.get_pointer(operand_b) = (value_b_signed % value_a_signed) as u16;
-            }
-         },
-
-         And => {
-            self.cycle_accumulator += 1;
-            *self.get_pointer(operand_b) = value_b & value_a;
-         },
-
-         Bor => {
-            self.cycle_accumulator += 1;
-            *self.get_pointer(operand_b) = value_b | value_a;
-         },
-
-         Xor => {
-            self.cycle_accumulator += 1;
-            *self.get_pointer(operand_b) = value_b ^ value_a;
-         },
-
-         Shr => {
-            self.cycle_accumulator += 1;
-            *self.get_pointer(operand_b) = value_b >> value_a;
-            self.excess = (((value_b as u32) << 16) >> value_a) as u16;
-         },
-
-         Asr => {
-            self.cycle_accumulator += 1;
-            *self.get_pointer(operand_b) = ((value_b as i16) >> value_a) as u16;
-            self.excess = (((value_b as i32) << 16) >> value_a) as u16;
-         },
-
-         Shl => {
-            self.cycle_accumulator += 1;
-            *self.get_pointer(operand_b) = value_b << value_a;
-         },
-
-         Ifb => {
-            self.cycle_accumulator += 2;
-
-            if value_b & value_a != 0 {} else {
-               self.consume_ifs();
-            }
-         },
-
-         Ifc => {
-            self.cycle_accumulator += 2;
-
-            if value_b & value_a == 0 {} else {
-               self.consume_ifs();
-            }
-         },
-
-         Ife => {
-            self.cycle_accumulator += 2;
-
-            if value_b == value_a {} else {
-               self.consume_ifs();
-            }
-         },
-
-         Ifn => {
-            self.cycle_accumulator += 2;
-
-            if value_b != value_a {} else {
-               self.consume_ifs();
-            }
-         },
-
-         Ifg => {
-            self.cycle_accumulator += 2;
-
-            if value_b > value_a {} else {
-               self.consume_ifs();
-            }
-         },
-
-         Ifa => {
-            self.cycle_accumulator += 2;
-
-            if value_b_signed > value_b_signed {} else {
-               self.consume_ifs();
-            }
-         },
-
-         Ifl => {
-            self.cycle_accumulator += 2;
-
-            if value_b < value_a {} else {
-               self.consume_ifs();
-            }
-         },
-
-         Ifu => {
-            self.cycle_accumulator += 2;
-
-            if value_b_signed < value_b_signed {} else {
-               self.consume_ifs();
-            }
-         },
-
-         Adx => {
-            self.cycle_accumulator += 3;
-            let result = value_b as u32 + value_a as u32 + self.excess as u32;
-            *self.get_pointer(operand_b) = result as u16;
-            self.excess = if result > 0xffff {1} else {0};
-         },
-
-         Sbx => {
-            self.cycle_accumulator += 3;
-            let result = value_b as i32 - value_a as i32 + self.excess as i32;
-            *self.get_pointer(operand_b) = result as u16;
-            self.excess = if result < 0 {0xffff} else {0};
-         },
-
-         Sti => {
-            *self.get_pointer(operand_b) = value_a;
-            self.registers[6] += 1;
-            self.registers[7] += 1;
-         },
-
-         Std => {
-            *self.get_pointer(operand_b) = value_a;
-            self.registers[6] -= 1;
-            self.registers[7] -= 1;
-         },
+         return HardwareInstruction::None;
       }
 
-      self.handle_mutation(operand_b);
-   }
+
+      // The hardware instruction to return. Various instructions may set this value.
+      let mut return_instruction = HardwareInstruction::None;
 
 
-   // Execute a special operation
-   fn special_operation(&mut self, operation: SpecialOperation, operand: ComplexOperand) {
-      let value = match operand {
-         ComplexOperand::Literal(val) => val as u16,
-         ComplexOperand::Simple(operand) => self.get_value(operand),
-      };
+      // Decode the instruction
+      let op_code = self.memory[self.program_counter as usize];
+      let operand_a   = (op_code & 0b1111_1100_0000_0000) >> 10;
+      let operand_b   = (op_code & 0b0000_0011_1110_0000) >> 05;
+      let instruction = (op_code & 0b0000_0000_0001_1111) >> 00;
 
 
-      use SpecialOperation::*;
-      match operation {
-         Jsr => {
-            self.cycle_accumulator += 3;
-            self.stack_pointer = self.stack_pointer.wrapping_sub(1);
-            self.memory[self.stack_pointer as usize] = self.program_counter + 1;
-            self.program_counter = value.wrapping_sub(1);
-         },
-
-         _ => unimplemented!(),
+      // Get the value of operand a, updating the various states
+      let value_a = self.get_value(operand_a);
+      if operand_a == 0x18 {
+         self.stack_pointer = self.stack_pointer.wrapping_add(1);
       }
-   }
+      self.program_counter = self.program_counter.wrapping_add(get_operand_length(operand_a));
+      self.cycle_accumulator += get_operand_cost(operand_a);
 
 
+      /* Handle a Special Instruction */
+      if instruction == 0x0 {
+         // Increment the cycle counters with the cost of the instruction
+         self.cycle_accumulator += get_special_instruction_cost(operand_b);
 
-   // Increment the program counter and cycle accumulator until a non-if instruction is found
-   fn consume_ifs(&mut self) {
-      use Instruction::Basic;
-      use BasicOperation::*;
-
-      loop {
-         match Instruction::decode(self.memory[self.program_counter as usize]) {
-              Some(Basic(Ifb, _, _))
-            | Some(Basic(Ifc, _, _))
-            | Some(Basic(Ife, _, _))
-            | Some(Basic(Ifn, _, _))
-            | Some(Basic(Ifg, _, _))
-            | Some(Basic(Ifa, _, _))
-            | Some(Basic(Ifl, _, _))
-            | Some(Basic(Ifu, _, _)) => {
-               self.program_counter += 1;
-               self.cycle_accumulator += 1;
+         // Execute the instruction
+         match operand_b {
+            0x01 => { // jsr
+               self.stack_pointer = self.stack_pointer.wrapping_sub(1);
+               self.memory[self.stack_pointer as usize] = self.program_counter.wrapping_add(1);
+               self.program_counter = value_a;
             },
 
-            _ => break,
+            0x08 => { // int
+               if self. interrupt_address != 0 {
+                  self.interrupt_queueing = true;
+                  self.stack_pointer.wrapping_sub(1);
+                  self.memory[self.stack_pointer as usize] = self.program_counter.wrapping_add(1);
+                  self.stack_pointer.wrapping_sub(1);
+                  self.memory[self.stack_pointer as usize] = self.registers[0];
+                  self.program_counter = self.interrupt_address;
+                  self.registers[0] = value_a;
+               }
+            },
+
+            0x09 => { // iag
+               let interrupt_address = self.interrupt_address;
+               if let Some(pointer_a) = self.get_pointer(value_a) {
+                  *pointer_a = interrupt_address;
+               }
+            },
+
+            0x0a => { // ias
+               self.interrupt_address = value_a;
+            },
+
+            0x0c => { // iaq
+               self.interrupt_queueing = value_a != 0;
+            },
+
+            0x0b => { // rfi
+               self.interrupt_queueing = false;
+               self.registers[0] = self.memory[self.stack_pointer as usize];
+               self.stack_pointer.wrapping_add(1);
+               self.program_counter = self.memory[self.stack_pointer as usize];
+               self.stack_pointer.wrapping_add(1);
+            },
+
+            0x10 => (), // hwn is handled at the end of the step function due to Rust's borrow checker
+
+            0x11 => { // hwq
+               return_instruction = HardwareInstruction::GetInfo(value_a);
+            },
+
+            0x12 => { // hwi
+               return_instruction = HardwareInstruction::Interrupt(value_a);
+            },
+
+            _ => ()
          }
       }
+
+      /* Handle a Regular Instruction */
+      else {
+         // Get the value of operand b, updating the state as necessary
+         let value_b = self.get_value(operand_b);
+         if operand_b == 0x18 {
+            self.stack_pointer = self.stack_pointer.wrapping_sub(1);
+         }
+         self.program_counter = self.program_counter.wrapping_add(get_operand_length(operand_b));
+         self.cycle_accumulator += get_operand_cost(operand_b);
+
+         // Update the cycle counters with the cost of the instruction
+         self.cycle_accumulator += get_instruction_cost(instruction);
+
+         // Execute the instruction
+         // Handle branching instructions
+         if is_if_op_code(op_code) {
+            let is_valid: bool = match instruction {
+               0x10 => (value_b & value_a) != 0,
+               0x11 => (value_b & value_a) == 0,
+               0x12 => value_b == value_a,
+               0x13 => value_b != value_a,
+               0x14 => value_b > value_a,
+               0x15 => (value_b as i16) > (value_a as i16),
+               0x16 => value_b < value_a,
+               0x17 => (value_b as i16) < (value_a as i16),
+               _ => panic!("Unexpected if instruction! This should have been impossible.")
+            };
+
+            if !is_valid {
+               self.cycle_accumulator += 1;
+
+               while is_if_op_code(self.memory[self.program_counter as usize]) {
+                  self.program_counter = self.program_counter.wrapping_add(1);
+                  self.cycle_accumulator += 1;
+               }
+            }
+         }
+
+         // Handle non-branching instructions
+         else {
+            let excess = self.excess;
+            if let Some(pointer_b) = self.get_pointer(operand_b) {
+               *pointer_b = match instruction {
+                  0x00 => *pointer_b,
+                  0x01 => value_a,
+                  0x02 => value_b.wrapping_add(value_a),
+                  0x03 => value_b.wrapping_sub(value_a),
+                  0x04 => value_b.wrapping_mul(value_a),
+                  0x05 => (value_b as i16).wrapping_mul(value_a as i16) as u16,
+                  0x06 => if value_a == 0 {0} else {value_b / value_a},
+                  0x07 => if value_a == 0 {0} else {(value_b as i16).wrapping_div(value_a as i16) as u16},
+                  0x08 => if value_a == 0 {0} else {value_b % value_a},
+                  0x09 => if value_a == 0 {0} else {(value_b as i16).wrapping_rem(value_a as i16) as u16},
+                  0x0a => value_b & value_a,
+                  0x0b => value_b | value_a,
+                  0x0c => value_b ^ value_a,
+                  0x0d => value_b >> value_a,
+                  0x0e => ((value_b as i16) >> value_a) as u16,
+                  0x0f => value_b << value_a,
+                  0x1a => value_b.wrapping_add(value_a).wrapping_add(excess),
+                  0x1b => value_b.wrapping_sub(value_a).wrapping_add(excess),
+                  0x1e => value_a,
+                  0x1f => value_a,
+                  _ => *pointer_b
+               };
+            }
+         }
+
+
+         // Update the overflow register
+         let value_a_signed = value_a as i16;
+         let value_b_signed = value_b as i16;
+         self.excess = match instruction {
+            0x02 => if (value_b as u32 + value_a as u32) > 0xffff {1} else {0},
+            0x03 => if (value_b as i32 - value_a as i32) < 0 {0xffff} else {0},
+            0x04 => ((value_b as u32 * value_a as u32) >> 16) as u16,
+            0x05 => ((value_b as i32 * value_a as i32) >> 16) as u16,
+            0x06 => if value_a == 0 {0} else {(((value_b as i32) << 16i32) / (value_a as i32)) as u16},
+            0x07 => if value_a == 0 {0} else {(((value_b_signed as i32) << 16) / (value_a_signed as i32)) as u16},
+            0x0d => (((value_b as u32) << 16) >> value_a) as u16,
+            0x0e => (((value_b as i32) << 16) >> value_a) as u16,
+            0x0f => (((value_b as u32) << value_a) >> 16) as u16,
+            0x1a => if (value_b as u32 + value_a as u32 + self.excess as u32) > 0xffff {1} else {0},
+            0x1b => if (value_b as i32 - value_a as i32 + self.excess as i32) < 0 {0xffff} else {0},
+            _ => self.excess,
+         };
+
+
+         // Update the I and J registers
+         match instruction {
+            0x1e => {
+               self.registers[6] = self.registers[6].wrapping_add(1);
+               self.registers[7] = self.registers[7].wrapping_add(1);
+            },
+
+            0x1f => {
+               self.registers[6] = self.registers[6].wrapping_sub(1);
+               self.registers[7] = self.registers[7].wrapping_sub(1);
+            },
+
+            _ => (),
+         }
+      }
+
+
+      // Decrement a cycle for this step, and increment the program counter
+      self.cycle_accumulator -= 1;
+      if instruction != 0x0 {
+         self.program_counter = self.program_counter.wrapping_add(1);
+      }
+
+      // Handle HWI instructions. This is done here rather than with the
+      // other special instructions due to Rust's borrow checker.
+      if instruction == 0x0 && operand_b == 0x10 {
+         if let Some(pointer) = self.get_pointer(operand_a) {
+            return HardwareInstruction::GetCount(pointer);
+         }
+      }
+
+      return return_instruction;
    }
 
 
 
-   // Get a pointer to the provided operand (Does not mutate state)
-   fn get_pointer<'a>(&'a mut self, operand: SimpleOperand) -> &'a mut u16 {
-      let next_word = self.memory[(self.program_counter + 1) as usize];
+   // Get a pointer to the location represented by the given operand
+   fn get_pointer(&mut self, operand: u16) -> Option<&mut u16> {
+      // If the next word is used, the program counter has already been incremented.
+      // Therefore, it is already pointing at the next word
+      let next_word: u16 = self.memory[self.program_counter as usize];
 
-      use SimpleOperand::*;
       match operand {
-         A              => &mut self.registers[0],
-         B              => &mut self.registers[1],
-         C              => &mut self.registers[2],
-         X              => &mut self.registers[3],
-         Y              => &mut self.registers[4],
-         Z              => &mut self.registers[5],
-         I              => &mut self.registers[6],
-         J              => &mut self.registers[7],
-         IndirectA      => &mut self.memory[self.registers[0] as usize],
-         IndirectB      => &mut self.memory[self.registers[1] as usize],
-         IndirectC      => &mut self.memory[self.registers[2] as usize],
-         IndirectX      => &mut self.memory[self.registers[3] as usize],
-         IndirectY      => &mut self.memory[self.registers[4] as usize],
-         IndirectZ      => &mut self.memory[self.registers[5] as usize],
-         IndirectI      => &mut self.memory[self.registers[6] as usize],
-         IndirectJ      => &mut self.memory[self.registers[7] as usize],
-         IndirectNextA  => &mut self.memory[(self.registers[0] + next_word) as usize],
-         IndirectNextB  => &mut self.memory[(self.registers[1] + next_word) as usize],
-         IndirectNextC  => &mut self.memory[(self.registers[2] + next_word) as usize],
-         IndirectNextX  => &mut self.memory[(self.registers[3] + next_word) as usize],
-         IndirectNextY  => &mut self.memory[(self.registers[4] + next_word) as usize],
-         IndirectNextZ  => &mut self.memory[(self.registers[5] + next_word) as usize],
-         IndirectNextI  => &mut self.memory[(self.registers[6] + next_word) as usize],
-         IndirectNextJ  => &mut self.memory[(self.registers[7] + next_word) as usize],
-         Push           => &mut self.memory[self.stack_pointer.wrapping_sub(1) as usize],
-         Pop            => &mut self.memory[self.stack_pointer as usize],
-         IndirectSP     => &mut self.memory[self.stack_pointer as usize],
-         IndirectNextSP => &mut self.memory[(self.stack_pointer + next_word) as usize],
-         SP             => &mut self.stack_pointer,
-         PC             => &mut self.program_counter,
-         EX             => &mut self.excess,
-         IndirectNext   => &mut self.memory[next_word as usize],
-         Next           => &mut self.memory[(self.program_counter + 1) as usize],
+         0x00...0x07 => Some(&mut self.registers[operand as usize]),
+         0x08...0x0f => Some(&mut self.memory[self.registers[(operand - 0x8) as usize] as usize]),
+         0x10...0x17 => Some(&mut self.memory[self.registers[(operand - 0x10) as usize].wrapping_add(next_word) as usize]),
+         0x18 => Some(&mut self.memory[self.stack_pointer as usize]),
+         0x19 => Some(&mut self.memory[self.stack_pointer as usize]),
+         0x1a => Some(&mut self.memory[self.stack_pointer.wrapping_add(next_word) as usize]),
+         0x1b => Some(&mut self.stack_pointer),
+         0x1c => Some(&mut self.program_counter),
+         0x1d => Some(&mut self.excess),
+         0x1e => Some(&mut self.memory[next_word as usize]),
+         _ => {
+            println!("Warning: Tried to get the value of a non-value operand: {}", operand);
+            None
+         },
       }
    }
 
 
-   // Get the value of the provided operand (Mutates the cycle counter and program counter as necessary)
-   fn get_value(&mut self, operand: SimpleOperand) -> u16 {
-      *self.get_pointer(operand)
+
+   // Get the value of the given operand, incrementing the cycle_accumulator and program_counter as necessary
+   fn get_value(&self, operand: u16) -> u16 {
+      let next_word: u16 = self.memory[self.program_counter.wrapping_add(1) as usize];
+
+      match operand {
+         0x00...0x07 => self.registers[operand as usize],
+         0x08...0x0f => self.memory[self.registers[(operand - 0x08) as usize] as usize],
+         0x10...0x17 => self.memory[self.registers[(operand - 0x10) as usize].wrapping_add(next_word) as usize],
+         0x18 | 0x19 => self.memory[self.stack_pointer as usize],
+         0x1a => self.memory[self.stack_pointer.wrapping_add(next_word) as usize],
+         0x1b => self.stack_pointer,
+         0x1c => self.program_counter,
+         0x1d => self.excess,
+         0x1e => self.memory[next_word as usize],
+         0x1f => next_word,
+         0x20...0x3f => operand.wrapping_sub(0x21),
+         _ => panic!("Invalid operand! This probably shouldn't have happened.")
+      }
    }
 }
 
 
-
-
-
 #[test]
-fn test_set() {
-   // Set a, 0x9
+fn instruction_iag() {
    let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa801;
+   dcpu.memory[0] = (0 << 10) | (0x09 << 5) | 0x0; // iag a
+   dcpu.interrupt_address = 52;
    dcpu.step();
-   assert_eq!(dcpu.registers[0], 9);
+   assert_eq!(dcpu.registers[0], 52);
 }
 
 #[test]
-fn test_add() {
-   // Add a, 0x9
+fn instruction_ias() {
    let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa802;
+   dcpu.memory[0] = (0 << 10) | (0x0a << 5) | 0x0; // ias a
+   dcpu.registers[0] = 39;
    dcpu.step();
-   assert_eq!(dcpu.registers[0], 14);
-}
-
-#[test]
-fn test_sub() {
-   // Sub a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa803;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 0xfffc);
-}
-
-#[test]
-fn test_mul() {
-   // Mul a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa804;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 45);
-}
-
-#[test]
-fn test_mli() {
-   // Mli a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa805;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 45);
-}
-
-#[test]
-fn test_div() {
-   // Div a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa806;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 0);
-}
-
-#[test]
-fn test_dvi() {
-   // Dvi a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa807;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 0);
-}
-
-#[test]
-fn test_mod() {
-   // Mod a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa808;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 5);
-}
-
-#[test]
-fn test_mdi() {
-   // Mdi a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa809;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 5);
-}
-
-#[test]
-fn test_and() {
-   // And a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa80a;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 1);
-}
-
-#[test]
-fn test_bor() {
-   // Bor a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa80b;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 0xd);
-}
-
-#[test]
-fn test_xor() {
-   // Xor a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa80c;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 0xc);
-}
-
-#[test]
-fn test_shr() {
-   // Shr a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa80d;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 0);
-}
-
-#[test]
-fn test_asr() {
-   // Asr a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa80e;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 0);
-}
-   
-#[test]
-fn test_shl() {
-   // Shl a, 0x9
-   let mut dcpu = Dcpu::new();
-   dcpu.registers[0] = 5;
-   dcpu.memory[0] = 0xa80f;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 0x0a00);
+   assert_eq!(dcpu.interrupt_address, 39);
 }
