@@ -3,4 +3,7 @@ mod operand_push_pop;
 mod operand_register;
 mod operand_register_indirect;
 mod operand_register_next_word_indirect;
+mod instructions_branching;
+mod instructions_special;
 mod instructions_arithmetic;
+mod program_crc;
