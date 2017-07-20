@@ -149,14 +149,6 @@ impl Dcpu {
                }
             },
 
-            0x0a => { // ias
-               self.interrupt_address = value_a;
-            },
-
-            0x0c => { // iaq
-               self.interrupt_queueing = value_a != 0;
-            },
-
             0x0b => { // rfi
                self.interrupt_queueing = false;
                self.registers[0] = self.memory[self.stack_pointer as usize];
@@ -166,14 +158,10 @@ impl Dcpu {
             },
 
             0x10 => (), // hwn is handled at the end of the step function due to Rust's borrow checker
-
-            0x11 => { // hwq
-               return_instruction = HardwareInstruction::GetInfo(value_a);
-            },
-
-            0x12 => { // hwi
-               return_instruction = HardwareInstruction::Interrupt(value_a);
-            },
+            0x0a => self.interrupt_address = value_a, // ias
+            0x0c => self.interrupt_queueing = value_a != 0, // iaq
+            0x11 => return_instruction = HardwareInstruction::GetInfo(value_a), // hwq
+            0x12 => return_instruction = HardwareInstruction::Interrupt(value_a), // hwi
 
             _ => ()
          }
@@ -290,15 +278,17 @@ impl Dcpu {
          self.program_counter = self.program_counter.wrapping_add(1);
       }
 
+
       // Handle HWI instructions. This is done here rather than with the
       // other special instructions due to Rust's borrow checker.
       if instruction == 0x0 && operand_b == 0x10 {
          if let Some(pointer) = self.get_pointer(operand_a) {
-            return HardwareInstruction::GetCount(pointer);
+            return_instruction = HardwareInstruction::GetCount(pointer);
          }
       }
 
-      return return_instruction;
+
+      return_instruction
    }
 
 
