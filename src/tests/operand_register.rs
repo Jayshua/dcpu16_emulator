@@ -90,9 +90,9 @@ fn register_direct_sp() {
 fn register_direct_pc() {
    let mut dcpu = Dcpu::new();
    dcpu.program_counter = 50;
-   dcpu.memory[50] = (0x1c << 10) | (0x1c << 5) | 0x2;
+   dcpu.memory[50] = (0x26 << 10) | (0x1c << 5) | 0x1; // set pc, 5 (I've decided adding to the program counter is undefined behavior)
    dcpu.step();
-   assert_eq!(dcpu.program_counter, 101); // The program counter increments at the end of the step operation
+   assert_eq!(dcpu.program_counter, 5);
 }
 
 #[test]
