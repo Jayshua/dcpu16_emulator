@@ -37,6 +37,11 @@ fn get_operand_length(operand: u16) -> u16 {
    }
 }
 
+fn get_opcode_length(opcode: u16) -> u16 {
+   let (_, operand_b, operand_a) = get_opcode_parts(opcode);
+   1 + get_operand_length(operand_b) + get_operand_length(operand_a)
+}
+
 fn get_instruction_cost(instruction: u16) -> u32 {
    match instruction {
       0x01 | 0x0a | 0x0b | 0x0c | 0x0d | 0x0e | 0x0f => 1,
@@ -68,6 +73,16 @@ fn is_if_op_code(op_code: u16) -> bool {
       0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 | 0x16 | 0x17 => true,
       _ => false
    }
+}
+
+
+// Return the parts of the instruction as a tuple of the form (instruction, operand_b, operand_a)
+fn get_opcode_parts(instruction: u16) -> (u16, u16, u16) {
+   (
+      (instruction & 0b0000_0000_0001_1111) >> 00,
+      (instruction & 0b0000_0011_1110_0000) >> 05,
+      (instruction & 0b1111_1100_0000_0000) >> 10
+   )
 }
 
 
@@ -103,10 +118,8 @@ impl Dcpu {
 
       // Decode the instruction
       let op_code = self.memory[self.program_counter as usize];
-      let operand_a   = (op_code & 0b1111_1100_0000_0000) >> 10;
-      let operand_b   = (op_code & 0b0000_0011_1110_0000) >> 05;
-      let instruction = (op_code & 0b0000_0000_0001_1111) >> 00;
-
+      let (instruction, operand_b, operand_a) = get_opcode_parts(op_code);
+      self.program_counter = self.program_counter.wrapping_add(1);
 
       // Get the value of operand a, updating the various states
       let value_a = self.get_value(operand_a);
@@ -126,7 +139,7 @@ impl Dcpu {
          match operand_b {
             0x01 => { // jsr
                self.stack_pointer = self.stack_pointer.wrapping_sub(1);
-               self.memory[self.stack_pointer as usize] = self.program_counter.wrapping_add(1);
+               self.memory[self.stack_pointer as usize] = self.program_counter;
                self.program_counter = value_a;
             },
 
@@ -134,7 +147,7 @@ impl Dcpu {
                if self. interrupt_address != 0 {
                   self.interrupt_queueing = true;
                   self.stack_pointer.wrapping_sub(1);
-                  self.memory[self.stack_pointer as usize] = self.program_counter.wrapping_add(1);
+                  self.memory[self.stack_pointer as usize] = self.program_counter;
                   self.stack_pointer.wrapping_sub(1);
                   self.memory[self.stack_pointer as usize] = self.registers[0];
                   self.program_counter = self.interrupt_address;
@@ -198,8 +211,10 @@ impl Dcpu {
             if !is_valid {
                self.cycle_accumulator += 1;
 
+               self.program_counter = self.program_counter.wrapping_add(get_opcode_length(self.memory[self.program_counter as usize]));
+
                while is_if_op_code(self.memory[self.program_counter as usize]) {
-                  self.program_counter = self.program_counter.wrapping_add(1);
+                  self.program_counter = self.program_counter.wrapping_add(get_opcode_length(self.memory[self.program_counter as usize]));
                   self.cycle_accumulator += 1;
                }
             }
@@ -276,7 +291,6 @@ impl Dcpu {
       if instruction != 0x0 {
          self.cycle_accumulator -= 1;
          self.cycle_count += 1;
-         self.program_counter = self.program_counter.wrapping_add(1);
       }
 
 
@@ -293,12 +307,12 @@ impl Dcpu {
    }
 
 
-
    // Get a pointer to the location represented by the given operand
    fn get_pointer(&mut self, operand: u16) -> Option<&mut u16> {
-      // If the next word is used, the program counter has already been incremented.
-      // Therefore, it is already pointing at the next word
-      let next_word: u16 = self.memory[self.program_counter as usize];
+      // The program counter has already been incremented past the "next word"
+      // and is pointing to the next instruction. Therefore, to get the next word
+      // we actually need to get the previous word.
+      let next_word: u16 = self.memory[self.program_counter.wrapping_sub(1) as usize];
 
       match operand {
          0x00...0x07 => Some(&mut self.registers[operand as usize]),
@@ -322,7 +336,7 @@ impl Dcpu {
 
    // Get the value of the given operand, incrementing the cycle_accumulator and program_counter as necessary
    fn get_value(&self, operand: u16) -> u16 {
-      let next_word: u16 = self.memory[self.program_counter.wrapping_add(1) as usize];
+      let next_word: u16 = self.memory[self.program_counter as usize];
 
       match operand {
          0x00...0x07 => self.registers[operand as usize],

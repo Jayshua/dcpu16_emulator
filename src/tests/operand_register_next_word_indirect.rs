@@ -8,7 +8,7 @@ use super::super::Dcpu;
 #[test]
 fn register_next_word_indirect_a() {
    let mut dcpu = Dcpu::new();
-   dcpu.memory[0] = (16 << 10) | (16 << 5) | 0x2;
+   dcpu.memory[0] = (0x10 << 10) | (0x10 << 5) | 0x2; // add [a + 5], [a + 6]
    dcpu.memory[1] = 6;
    dcpu.memory[2] = 5;
    dcpu.memory[15] = 2;
