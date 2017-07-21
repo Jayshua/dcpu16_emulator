@@ -32,7 +32,7 @@ fn get_operand_cost(operand: u16) -> u32 {
 
 fn get_operand_length(operand: u16) -> u16 {
    match operand {
-      0x10...0x17 | 0x1a | 0x1e => 1,
+      0x10...0x17 | 0x1a | 0x1e | 0x1f => 1,
       _ => 0
    }
 }
@@ -273,8 +273,9 @@ impl Dcpu {
 
 
       // Decrement a cycle for this step, and increment the program counter
-      self.cycle_accumulator -= 1;
       if instruction != 0x0 {
+         self.cycle_accumulator -= 1;
+         self.cycle_count += 1;
          self.program_counter = self.program_counter.wrapping_add(1);
       }
 
