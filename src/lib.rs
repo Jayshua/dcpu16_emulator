@@ -1,5 +1,4 @@
 mod tests;
-pub mod types;
 
 
 pub enum HardwareInstruction<'a> {
