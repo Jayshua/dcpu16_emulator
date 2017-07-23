@@ -1,8 +1,18 @@
 mod tests;
 
 
-pub enum HardwareInstruction<'a> {
-   GetCount(&'a mut u16),
+pub const A: usize = 0x0;
+pub const B: usize = 0x1;
+pub const C: usize = 0x2;
+pub const X: usize = 0x3;
+pub const Y: usize = 0x4;
+pub const Z: usize = 0x5;
+pub const I: usize = 0x6;
+pub const J: usize = 0x7;
+
+
+pub enum HardwareInstruction {
+   GetCount(u16),
    GetInfo(u16),
    Interrupt(u16),
    None
@@ -54,16 +64,11 @@ fn get_instruction_cost(instruction: u16) -> u32 {
 fn get_special_instruction_cost(instruction: u16) -> u32 {
    match instruction {
       0x00 => 0,
-      0x01 => 3,
-      0x08 => 4,
-      0x09 => 1,
-      0x0a => 1,
-      0x0b => 3,
-      0x0c => 2,
-      0x10 => 2,
-      0x11 => 4,
-      0x12 => panic!("Unable to compute cost of hwi instruction..."),
-      _    => panic!("Unknown special instruction!"),
+      0x09 | 0x0a => 1,
+      0x0c | 0x10 => 2,
+      0x01 | 0x0b => 3,
+      0x08 | 0x11 | 0x12 => 4,
+      _    => panic!("Unknown special instruction {}", instruction),
    }
 }
 
@@ -169,9 +174,9 @@ impl Dcpu {
                self.stack_pointer.wrapping_add(1);
             },
 
-            0x10 => (), // hwn is handled at the end of the step function due to Rust's borrow checker
             0x0a => self.interrupt_address = value_a, // ias
             0x0c => self.interrupt_queueing = value_a != 0, // iaq
+            0x10 => return_instruction = HardwareInstruction::GetCount(operand_a), // hwn
             0x11 => return_instruction = HardwareInstruction::GetInfo(value_a), // hwq
             0x12 => return_instruction = HardwareInstruction::Interrupt(value_a), // hwi
 
@@ -292,17 +297,14 @@ impl Dcpu {
          self.cycle_count += 1;
       }
 
-
-      // Handle HWI instructions. This is done here rather than with the
-      // other special instructions due to Rust's borrow checker.
-      if instruction == 0x0 && operand_b == 0x10 {
-         if let Some(pointer) = self.get_pointer(operand_a) {
-            return_instruction = HardwareInstruction::GetCount(pointer);
-         }
-      }
-
-
       return_instruction
+   }
+
+
+   pub fn set_value(&mut self, operand: u16, value: u16) {
+      if let Some(pointer) = self.get_pointer(operand) {
+         *pointer = value;
+      }
    }
 
 
