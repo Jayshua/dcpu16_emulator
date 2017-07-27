@@ -1,2 +1,0 @@
-   Compiling dcpu16_emulator v0.1.0 (file:///C:/Users/Jayshua/Desktop/Code/Rust/dcpu/dcpu16_emulator)
-    Finished dev [unoptimized + debuginfo] target(s) in 0.93 secs
