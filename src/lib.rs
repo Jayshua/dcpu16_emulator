@@ -194,6 +194,7 @@ impl Dcpu {
          self.program_counter = self.program_counter.wrapping_add(get_operand_length(operand_b));
          self.cycle_accumulator += get_operand_cost(operand_b);
 
+
          // Update the cycle counters with the cost of the instruction
          self.cycle_accumulator += get_instruction_cost(instruction);
 
@@ -213,14 +214,15 @@ impl Dcpu {
             };
 
             if !is_valid {
-               self.cycle_accumulator += 1;
-
-               self.program_counter = self.program_counter.wrapping_add(get_opcode_length(self.memory[self.program_counter as usize]));
-
+               // Skip chained if instructions
                while is_if_op_code(self.memory[self.program_counter as usize]) {
                   self.program_counter = self.program_counter.wrapping_add(get_opcode_length(self.memory[self.program_counter as usize]));
                   self.cycle_accumulator += 1;
                }
+
+               // Skip the final instruction the ifs are protecting
+               self.cycle_accumulator += 1;
+               self.program_counter = self.program_counter.wrapping_add(get_opcode_length(self.memory[self.program_counter as usize]));
             }
          }
 
