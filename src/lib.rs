@@ -357,22 +357,3 @@ impl Dcpu {
       }
    }
 }
-
-
-#[test]
-fn instruction_iag() {
-   let mut dcpu = Dcpu::new();
-   dcpu.memory[0] = (0 << 10) | (0x09 << 5) | 0x0; // iag a
-   dcpu.interrupt_address = 52;
-   dcpu.step();
-   assert_eq!(dcpu.registers[0], 52);
-}
-
-#[test]
-fn instruction_ias() {
-   let mut dcpu = Dcpu::new();
-   dcpu.memory[0] = (0 << 10) | (0x0a << 5) | 0x0; // ias a
-   dcpu.registers[0] = 39;
-   dcpu.step();
-   assert_eq!(dcpu.interrupt_address, 39);
-}
