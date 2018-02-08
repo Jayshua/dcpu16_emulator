@@ -30,6 +30,7 @@ pub struct Dcpu {
    pub interrupt_address: u16,
    pub interrupt_queue: Vec<u16>,
    pub interrupt_queueing: bool,
+   pub hardware_interrupt: Option<HardwareInstruction>,
 }
 
 fn get_operand_cost(operand: u16) -> u32 {
@@ -102,22 +103,25 @@ impl Dcpu {
          cycle_count: 0,
          interrupt_address: 0,
          interrupt_queue: vec![],
-         interrupt_queueing: false
+         interrupt_queueing: false,
+         hardware_interrupt: None,
       }
    }
 
 
-   pub fn step(&mut self) -> HardwareInstruction {
+   pub fn step(&mut self) {
       // Skip the step if the accumulator still has cycles from the last operation
       if self.cycle_accumulator > 0 {
          self.cycle_accumulator -= 1;
          self.cycle_count += 1;
-         return HardwareInstruction::None;
+         return;
       }
 
-
-      // The hardware instruction to return. Various instructions may set this value.
-      let mut return_instruction = HardwareInstruction::None;
+      // Skip the step if there is a hardware interrupt waiting to be handled
+      if self.hardware_interrupt.is_some() {
+         self.cycle_count += 1;
+         return;
+      }
 
 
       // Decode the instruction
@@ -176,9 +180,9 @@ impl Dcpu {
 
             0x0a => self.interrupt_address = value_a, // ias
             0x0c => self.interrupt_queueing = value_a != 0, // iaq
-            0x10 => return_instruction = HardwareInstruction::GetCount(operand_a), // hwn
-            0x11 => return_instruction = HardwareInstruction::GetInfo(value_a), // hwq
-            0x12 => return_instruction = HardwareInstruction::Interrupt(value_a), // hwi
+            0x10 => self.hardware_interrupt = Some(HardwareInstruction::GetCount(operand_a)), // hwn
+            0x11 => self.hardware_interrupt = Some(HardwareInstruction::GetInfo(value_a)), // hwq
+            0x12 => self.hardware_interrupt = Some(HardwareInstruction::Interrupt(value_a)), // hwi
 
             _ => ()
          }
@@ -298,8 +302,6 @@ impl Dcpu {
          self.cycle_accumulator -= 1;
          self.cycle_count += 1;
       }
-
-      return_instruction
    }
 
 
